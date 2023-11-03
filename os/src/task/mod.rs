@@ -56,6 +56,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            started: false,
             start_time: 0_usize,
             syscall_times: [0_u32; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
@@ -83,9 +84,10 @@ impl TaskManager {
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
-        if task0.task_status != TaskStatus::Running {
+        task0.task_status = TaskStatus::Running;
+        if task0.started == false {
+            task0.started = true;
             task0.start_time = get_time_us();
-            task0.task_status = TaskStatus::Running;
         }
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
@@ -128,9 +130,10 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
-            if inner.tasks[next].task_status != TaskStatus::Running {
+            inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].started == false {
+                inner.tasks[next].started = true;
                 inner.tasks[next].start_time = get_time_us();
-                inner.tasks[next].task_status = TaskStatus::Running;
             }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
