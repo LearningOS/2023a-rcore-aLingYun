@@ -1,4 +1,9 @@
 //! Process management syscalls
+use crate::config::PAGE_SIZE;
+use crate::mm::memory_set::{mm_sys_mmap, mm_sys_munmap};
+use crate::mm::page_table::translated_ref_mut;
+use crate::task::{current_user_token, get_current_task_info};
+use crate::timer::{get_time_ms, get_time_us};
 use crate::{
     config::MAX_SYSCALL_NUM,
     task::{
@@ -8,20 +13,34 @@ use crate::{
 
 #[repr(C)]
 #[derive(Debug)]
+/// time struct
 pub struct TimeVal {
+    /// s
     pub sec: usize,
+    /// us
     pub usec: usize,
 }
 
 /// Task information
 #[allow(dead_code)]
+#[derive(Copy, Clone, Debug)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
-    status: TaskStatus,
+    pub status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
-    time: usize,
+    pub time: usize,
+}
+
+impl Default for TaskInfo {
+    fn default() -> Self {
+        Self {
+            status: TaskStatus::Running,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            time: 0,
+        }
+    }
 }
 
 /// task exits and submit an exit code
@@ -41,29 +60,45 @@ pub fn sys_yield() -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    -1
+    let time = get_time_us();
+    let ts_mut = translated_ref_mut(current_user_token(), ts);
+    *ts_mut = TimeVal {
+        sec: time / 1_000_000,
+        usec: time % 1_000_000,
+    };
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
+pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    -1
+    let mut info = get_current_task_info();
+    info.time = get_time_ms() - info.time;
+    let ti_mut = translated_ref_mut(current_user_token(), ti);
+    *ti_mut = info;
+    0
 }
 
 // YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+/// for mmap in system call
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    if start % PAGE_SIZE != 0 || port & !0x7 != 0 || port & 0x7 == 0 {
+        return -1;
+    }
+    mm_sys_mmap(start, len, port)
 }
 
 // YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+/// for munmap in system call
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    if start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    mm_sys_munmap(start, len)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

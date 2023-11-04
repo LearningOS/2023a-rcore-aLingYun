@@ -8,6 +8,7 @@ use crate::config::{
     KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
+use crate::task::TASK_MANAGER;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -262,6 +263,38 @@ impl MemorySet {
             false
         }
     }
+    /// for find the index
+    pub fn find_index(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> usize {
+        self.areas
+            .iter()
+            .enumerate()
+            .find(|(_idx, e)| {
+                e.vpn_range.get_start() == start_vpn && e.vpn_range.get_end() == end_vpn
+            })
+            .unwrap_or((
+                usize::MAX,
+                &MapArea::new(
+                    VirtAddr::from(0),
+                    VirtAddr::from(0),
+                    MapType::Identical,
+                    MapPermission::empty(),
+                ),
+            ))
+            .0
+    }
+    /// for de-allocate
+    pub fn dealloc(&mut self, idx: usize) {
+        let area = &mut self.areas[idx];
+        area.unmap(&mut self.page_table);
+        self.areas.remove(idx);
+    }
+    /// for de-allocate previous
+    pub fn dealloc_pre(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
+        let idx = self.find_index(start_vpn, end_vpn);
+        if idx != usize::MAX {
+            self.dealloc(idx)
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -272,6 +305,7 @@ pub struct MapArea {
 }
 
 impl MapArea {
+    /// init for MapArea struct
     pub fn new(
         start_va: VirtAddr,
         end_va: VirtAddr,
@@ -287,6 +321,7 @@ impl MapArea {
             map_perm,
         }
     }
+    /// for map one
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
@@ -303,24 +338,28 @@ impl MapArea {
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
+    /// for unmap one
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
         page_table.unmap(vpn);
     }
+    /// for map
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
     #[allow(unused)]
+    /// for unmap
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
     }
     #[allow(unused)]
+    /// for shrink to
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
             self.unmap_one(page_table, vpn)
@@ -328,6 +367,7 @@ impl MapArea {
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
     #[allow(unused)]
+    /// for append to
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
             self.map_one(page_table, vpn)
@@ -361,7 +401,9 @@ impl MapArea {
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
+    /// identical
     Identical,
+    /// frame
     Framed,
 }
 
@@ -409,4 +451,56 @@ pub fn remap_test() {
         .unwrap()
         .executable(),);
     println!("remap_test passed!");
+}
+/// for mmap in mm module
+pub fn mm_sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+
+    let end_va = VirtAddr::from(end_vpn);
+
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    let memory_set_ref_mut = &mut inner.tasks[current].memory_set;
+
+    if (start_vpn.0..end_vpn.0).any(|e| {
+        memory_set_ref_mut
+            .page_table
+            .is_mapped(VirtPageNum::from(e))
+    }) {
+        return -1;
+    }
+    let flag = MapPermission::from_bits((_port << 1 | 16) as u8).unwrap();
+    memory_set_ref_mut.insert_framed_area(start_va, end_va, flag);
+    0
+}
+/// for munmap in mm module
+pub fn mm_sys_munmap(_start: usize, _len: usize) -> isize {
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+
+    let _start_va = VirtAddr::from(start_vpn);
+    let _end_va = VirtAddr::from(end_vpn);
+
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    let memory_set_ref_mut = &mut inner.tasks[current].memory_set;
+
+    if (start_vpn.0..end_vpn.0).any(|e| {
+        !memory_set_ref_mut
+            .page_table
+            .is_mapped(VirtPageNum::from(e))
+    }) {
+        return -1;
+    }
+    memory_set_ref_mut.dealloc_pre(start_vpn, end_vpn);
+    0
 }

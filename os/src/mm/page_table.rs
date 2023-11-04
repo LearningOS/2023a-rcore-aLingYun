@@ -1,6 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -8,13 +8,21 @@ use bitflags::*;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
+        /// if valid
         const V = 1 << 0;
+        /// readable
         const R = 1 << 1;
+        /// writable
         const W = 1 << 2;
+        /// executable
         const X = 1 << 3;
+        /// if allow access virtual page table in User mode
         const U = 1 << 4;
+        /// now don't care
         const G = 1 << 5;
+        /// if was accessed
         const A = 1 << 6;
+        /// if was modified
         const D = 1 << 7;
     }
 }
@@ -68,6 +76,16 @@ impl PageTableEntry {
 pub struct PageTable {
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,
+}
+
+impl Default for PageTable {
+    fn default() -> Self {
+        let frame = frame_alloc().unwrap();
+        PageTable {
+            root_ppn: frame.ppn,
+            frames: vec![frame],
+        }
+    }
 }
 
 /// Assume that it won't oom when creating/mapping.
@@ -125,6 +143,7 @@ impl PageTable {
         }
         result
     }
+
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
@@ -147,6 +166,20 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+    /// for judge a virtual page number if was mapped
+    pub fn is_mapped(&self, vpn: VirtPageNum) -> bool {
+        self.find_pte(vpn).is_some() && self.find_pte(vpn).unwrap().is_valid()
+    }
+    /// transfer virtual address to physical address
+    pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
+        self.find_pte(va.clone().floor()).map(|pte| {
+            let phy_address: PhysAddr = pte.ppn().into();
+
+            let phy_address_usize = phy_address.0;
+
+            (phy_address_usize + va.page_offset()).into()
+        })
+    }
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
@@ -155,6 +188,7 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     let mut start = ptr as usize;
     let end = start + len;
     let mut v = Vec::new();
+
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
@@ -171,3 +205,14 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+/// get a mutable physical address ref via a virtual address pointer
+pub fn translated_ref_mut<T>(token: usize, ptr: *mut T) -> &'static mut T {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+
+    page_table
+        .translate_va(VirtAddr::from(va))
+        .unwrap()
+        .get_mut()
+}
+

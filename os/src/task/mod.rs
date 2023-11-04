@@ -22,6 +22,8 @@ use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
+use crate::syscall::process::TaskInfo;
+use crate::timer::get_time_ms;
 pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
@@ -37,15 +39,15 @@ pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
     /// use inner value to get mutable access
-    inner: UPSafeCell<TaskManagerInner>,
+    pub(crate) inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
-struct TaskManagerInner {
+pub struct TaskManagerInner {
     /// task list
-    tasks: Vec<TaskControlBlock>,
+    pub(crate) tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    current_task: usize,
+    pub(crate) current_task: usize,
 }
 
 lazy_static! {
@@ -79,6 +81,10 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+
+        next_task.started = true;
+        next_task.task_info.time = get_time_ms();
+
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -87,6 +93,14 @@ impl TaskManager {
             __switch(&mut _unused as *mut _, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
+    }
+
+    fn calculate_syscall(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task = &mut inner.tasks[current];
+
+        task.task_info.syscall_times[id] += 1;
     }
 
     /// Change the status of current `Running` task into `Ready`.
@@ -141,6 +155,12 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+
+            if !inner.tasks[next].started {
+                inner.tasks[next].started = true;
+                inner.tasks[next].task_info.time = get_time_ms();
+            }
+
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -152,6 +172,12 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn get_current_task_info(&self) -> TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info
     }
 }
 
@@ -201,4 +227,12 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+/// for calculate system called times
+pub fn calculate_syscall(id: usize) {
+    TASK_MANAGER.calculate_syscall(id)
+}
+/// for get current task infomation
+pub fn get_current_task_info() -> TaskInfo {
+    TASK_MANAGER.get_current_task_info()
 }
