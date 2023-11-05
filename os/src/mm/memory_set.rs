@@ -300,6 +300,21 @@ impl MemorySet {
             false
         }
     }
+    /// unmap the virtual page  v2
+    pub fn unmap_at_once(&mut self, start: VirtPageNum, end: VirtPageNum) -> isize {
+        if let Some(index) = self
+            .areas
+            .iter_mut()
+            .position(|area| area.vpn_range.get_start() == start && area.vpn_range.get_end() == end)
+        {
+            // println!("area start {}, unmap start {}",self.areas[index].vpn_range.get_start().0,start.0);
+            self.areas[index].unmap(&mut self.page_table);
+            self.areas.remove(index);
+            0
+        } else {
+            -1
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

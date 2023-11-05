@@ -7,6 +7,7 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
+use crate::mm::{MapPermission, PageTableEntry, VPNRange, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
@@ -19,6 +20,15 @@ pub struct Processor {
 
     ///The basic control flow of each core, helping to select and switch process
     idle_task_cx: TaskContext,
+}
+
+impl Default for Processor {
+    fn default() -> Self {
+        Self {
+            current: None,
+            idle_task_cx: TaskContext::zero_init(),
+        }
+    }
 }
 
 impl Processor {
@@ -74,6 +84,70 @@ pub fn run_tasks() {
             warn!("no tasks available in run_tasks");
         }
     }
+}
+
+///  get current task create time
+pub fn get_current_task_create_time() -> usize {
+    current_task().unwrap().inner_exclusive_access().create_time
+}
+
+/// modify the task priority
+pub fn set_task_priority(priority: isize) {
+    let current = current_task().unwrap();
+    current.inner_exclusive_access().set_task_priority(priority);
+    // current.pid.0
+}
+/// modify the syscall times
+pub fn calculate_syscall_times(syscall_id: usize) {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .caculate_syscall_times(syscall_id);
+}
+/// get the current task's syscall times
+pub fn get_current_task_syscall_times() -> [u32; 500] {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .syscall_times
+}
+/// get the current task status
+pub fn get_current_task_status() -> TaskStatus {
+    current_task().unwrap().inner_exclusive_access().task_status
+}
+/// look up the current task pageable
+pub fn find_current_task_pagetable(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .memory_set
+        .translate(vpn)
+}
+/// insert a new area to current task
+pub fn current_insert_framed_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .memory_set
+        .insert_framed_area(start_va, end_va, permission);
+}
+/// unmap the area
+pub fn unmap_the_area(_start: usize, _len: usize) -> isize {
+    let start_vpn = VirtAddr::from(_start).floor();
+    let end_vpn = VirtAddr::from(_start + _len).ceil();
+    let current_task = current_task().unwrap();
+    let mut inner = current_task.inner_exclusive_access();
+    let vpns = VPNRange::new(start_vpn, end_vpn);
+    for vpn in vpns {
+        if let Some(pte) = inner.memory_set.translate(vpn) {
+            if !pte.is_valid() {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
+    }
+    inner.memory_set.unmap_at_once(start_vpn, end_vpn)
 }
 
 /// Get current task through take, leaving a None in its place
